@@ -1,0 +1,274 @@
+---
+title: "Photometric Redshift (and Stellar Mass!) Estimation with Trees and Random Forest"
+author: "Peter Freeman (Penn State Summer School in Statistics for Astronomers XVII)"
+date: "10 June 2022"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: spacelab
+---
+
+# Data
+
+## Input and Processing
+
+We'll begin by importing photometric redshift data from the Buzzard simulation, data that were utilized in the first Data Challenge of the Large Synoptic Survey Telescope (LSST DC1).
+```{r}
+df = read.csv("https://raw.githubusercontent.com/pefreeman/PSU_2019/master/PhotoZ.csv")
+
+w = apply(df,1,function(x){return(max(x)<98)})
+df = df[w,]
+
+dim(df)
+names(df)
+```
+
+If everything loaded correctly, you should see in your global environment a data frame containing eight measurements for each of 10,000 (simulated) galaxies. The first six are magnitudes; these are the predictor variables (or independent or explanatory variables). The last two are response (or dependent) variables representing galaxy redshift and stellar mass (in log-base-10 solar mass units).
+
+At this point, we will process these data so that instead of six magnitudes we will have five colors and one magnitude. (The reason? Empirically, it leads to better predictions of redshift.)
+```{r}
+ug = df$u - df$g
+gr = df$g - df$r
+ri = df$r - df$i
+iz = df$i - df$z
+zy = df$z - df$y
+
+df = data.frame(ug,gr,ri,iz,zy,df$i,df$redshift,df$mstar)
+names(df)[6:8] = c("i","redshift","mstar")
+
+summary(df)
+```
+
+## Data Splitting
+
+To illustrate model assessment, we will perform simple data splitting in this lab. k-fold cross-validation is preferred, as it leads to less variance in estimates of the mean-squared error, but it is computationally more time intensive. Below, we place 70% of the data into a training set, and 30% into a test set.
+```{r}
+set.seed(102)
+
+s = sample(nrow(df),0.7*nrow(df))
+pred.train = df[s,1:6]
+pred.test  = df[-s,1:6]
+z.train    = df[s,7]
+z.test     = df[-s,7]
+mass.train = df[s,8]
+mass.test  = df[-s,8]
+```
+
+# Baseline: Linear Regression Analysis
+
+In the next two code chunks below we will perform linear regression so as to learn baseline models for redshift and for stellar mass. By "baseline," I mean that we are going to get initial values for the test-set mean-squared error that should be larger than those which we'll observe for non-linear tree and random forest models.
+
+The mean-squared error is
+$$
+MSE = \frac{1}{n_{\rm test}} \sum_{i=1}^{n_{\rm test}} (Y_i^{\rm obs} - {\hat Y}_i)^2
+$$
+where $n_{\rm test}$ is the number of galaxies in the test set, and $\hat{Y}_i$ is the predicted value for the $i^{\rm th}$ test-set response variable.
+
+## Linear Regression for Redshift (z)
+
+```{r}
+if ( require(ggplot2) == FALSE ) {
+  install.packages("ggplot2",repos="https://cloud.r-project.org")
+  library(ggplot2)
+}
+
+out.lm = lm(z.train~.,data=pred.train)
+summary(out.lm)
+z.pred = predict(out.lm,newdata=pred.test)
+(mse.lm = mean((z.pred-z.test)^2))
+ggplot(data=data.frame(z.test,z.pred),mapping=aes(x=z.test,y=z.pred)) + geom_point() +
+  xlim(0,2) + ylim(0,2) + geom_abline(intercept=0,slope=1,color="red") + xlab("Observed Redshift") +
+  ylab("Predicted Redshift")
+```
+
+The mean-squared error is 0.093. Looking at the diagnostic plot, we see that while the data are informative about redshift, the model is not particularly great. If you examine the output of `summary(out.lm)`, you would find that the $R^2$ value is $\approx$ 0.48: we can do better! (Particularly at high redshifts!)
+
+Remember: the magnitude of the MSE depends on the *units of the response variable*! An MSE of 0.001 for one variable is not necessarily better than a value of 100 for another.
+
+## Linear Regression for Stellar Mass (mass)
+
+```{r}
+out.lm = lm(mass.train~.,data=pred.train)
+summary(out.lm)
+mass.pred = predict(out.lm,newdata=pred.test)
+(mse.lm = mean((mass.pred-mass.test)^2))
+ggplot(data=data.frame(mass.test,mass.pred),mapping=aes(x=mass.test,y=mass.pred)) + geom_point() +
+  xlim(6,12) + ylim(6,12) + geom_abline(intercept=0,slope=1,color="red")
+```
+
+The MSE is 0.318 and the $R^2$ is 0.744: linear regression definitely does a better job of predicting mass than redshift, but there's still room for improvement.
+
+# Decision Trees
+
+## Redshift
+
+```{r}
+if ( require(rpart) == FALSE ) {
+  install.packages("rpart",repos="https://cloud.r-project.org")
+  library(rpart)
+}
+if ( require(rpart.plot) == FALSE ) {
+  install.packages("rpart.plot",repos="https://cloud.r-project.org")
+  library(rpart.plot)
+}
+
+out.rpart = rpart(z.train~.,data=pred.train)
+z.pred = predict(out.rpart,newdata=pred.test)
+(mse.rpart = mean((z.pred-z.test)^2))
+ggplot(data=data.frame(z.test,z.pred),mapping=aes(x=z.test,y=z.pred)) + geom_point() +
+  xlim(0,2) + ylim(0,2) + geom_abline(intercept=0,slope=1,color="red")
+rpart.plot(out.rpart)
+```
+
+The MSE is reduced from 0.093 to 0.088: a regression tree model is better than a linear regression model for predicting redshift. (But not necessarily so much better as to select it over linear regression, which provides full inferential capabilities.)
+
+Look at the diagnostic plot of `z.pred` versus `z.test`. Do you understand *why* it looks the way it does? All test data that map to a particular leaf in the tree model have the same predicted response value. There are 11 leaves in the tree, and 11 horizontal strips in the diagnostic plot.
+
+Finally, look at the tree plot. Other than the fact that the $u$-band magnitude is apparently not informative, we don't observe any overarching trends.
+
+## Stellar Mass
+
+Your job, if you choose to accept it:
+```{r}
+# REPLACE ME WITH A DECISION TREE ANALYSIS FOR STELLAR MASS (change z.train to mass.train, etc.)
+```
+*Replace me with any conclusions you reach.*
+
+<hr>
+
+# Random Forest
+
+## Redshift
+
+```{r}
+if ( require(randomForest) == FALSE ) {
+  install.packages("randomForest",repos="https://cloud.r-project.org")
+  library(randomForest)
+}
+
+out.rf = randomForest(z.train~.,data=pred.train,importance=TRUE)
+z.pred = predict(out.rf,newdata=pred.test)
+(mse.rf = mean((z.pred-z.test)^2))
+randomForest::importance(out.rf,type=1)     # resolves namespace issue with rattle package
+ggplot(data=data.frame(z.test,z.pred),mapping=aes(x=z.test,y=z.pred)) + geom_point() +
+  xlim(0,2) + ylim(0,2) + geom_abline(intercept=0,slope=1,color="red")
+varImpPlot(out.rf,type=1)
+```
+
+In the notes, we state that trees do not generalize well, and we see evidence of that here: the MSE decreases from 0.088 (tree) to 0.061 (RF). 
+
+Because we aggregate many trees (i.e., a forest, randomly grown), we cannot simply output a plot of a tree like we could above. Hence interpretability is reduced. What we *can* do is output (and visualize) the *importance* of each variable: when we split on that variable, by how much on average is the MSE reduced? We see that $iz$ is the most important variable overall, while (as expected, given what we wrote above), $ug$ is the least informative.
+
+## Stellar Mass
+
+Your job, if you choose to accept it:
+```{r}
+# REPLACE ME WITH A RANDOM FOREST ANALYSIS FOR STELLAR MASS
+```
+Replace me with any conclusions you reach.
+
+# RFCDE
+
+RFCDE, by Pospisil & Lee (2018), is an extension of random forest in which we make estimates of *conditional densities* for, e.g., redshift, instead of simple point estimates. Why would we want to do this? Simple summaries of the distribution of possible values of a response variable is fine if the distribution is, e.g., normal. However, if the distribution is, e.g., multi-modal (due to degeneracies in the predictor space, i.e., regions of predictor space that point towards two or more different possible values for the response), then simple summaries don't cut it: a mean (the point estimate) may lie between two modes and thus may be a very improbable value.
+
+Note that RFCDE is to be applied only when (a) performing regression (i.e., the response variable is quantitative, or continuously valued), and (b) the predictors are all quantitative. Regarding (b): RFCDE currently assumes that the test-set predictor values comprise a matrix, which is of homogeneous type and thus does not allow the inclusion of, e.g., factor variables that could be included in a typical random forest analysis.
+
+Let's set up RFCDE. *This may not work on everyone's laptops!* Underneath the hood of RFCDE is a base layer of `C++` code (which allows RFCDE to be as easily ported to `Python` as `R`), and if your compilers aren't up to date, etc., things may break down. If this happens to you: make friends with a fellow summer school attendee!
+
+Uncomment the code below and try to run it:
+```{r}
+if ( require(devtools) == FALSE ) {
+  install.packages("devtools",repos="https://cloud.r-project.org")
+  library(devtools)
+}
+if ( require(RFCDE) == FALSE ) {
+  devtools::install_github("tpospisi/RFCDE/r")
+}
+```
+If you get here with no error messages...you should be good!
+
+## Redshift
+
+There are three blocks of code below. In the first one, we train an RFCDE model, then predict the CDEs for the test set data. The individual CDEs are evaluated along the user-specified `grid`. Note the need to cast the test-set predictors to a matrix on the fly. In the second block, we plot a specific CDE (using base `R` plotting, which is simpler in this context). Feel free to change the number and rerun. In the third block, we run a diagnostic test: we compute the PIT statistic (the integral of the CDE from 0 to the true redshift) for each test-set galaxy; if RFCDE is working optimally, the empirical distribution of these statistics will be uniform. (This diagnostic is akin to checking coverage for confidence intervals: do my 95% confidence intervals actually contain the true value 95% of the time? Are the PIT statistics smaller than 0.01 1% of the time? Smaller than 0.02 2% of the time? Etc.)
+```{r}
+library(RFCDE)
+out.rfcde = RFCDE(pred.train,z.train)
+grid = seq(0,2,by=0.01)
+cde  = suppressWarnings(predict(out.rfcde,newdata=as.matrix(pred.test),z_grid=grid))
+
+obj = 16  # Pick a number and rerun this line and the three below it: highlight the lines and hit cntrl-return.
+df.plot = data.frame(grid,cde[obj,])
+names(df.plot) = c("x","y")
+ggplot(data=df.plot,mapping=aes(x=x,y=y)) + geom_line() + xlab("Redshift") + ylab("f(z)")
+
+# Code for computing PIT statistics -- for diagnostic plot
+probability.matrix = t(apply(cde,1,function(x){cumsum(x)/sum(x)}))
+u = rep(NA,length(z.test))
+for ( ii in 1:length(u) ) {
+  u[ii] = spline(x=grid,y=probability.matrix[ii,],xout=z.test[ii])$y
+}
+u[u<0] = 0
+u[u>1] = 1
+hist(u,breaks=seq(0,1,by=0.025),main="Distribution of PIT Statistics - Test Set")
+```
+
+## Stellar Mass
+
+Your job, if you choose to accept it:
+```{r}
+# REPLACE ME WITH A RFCDE ANALYSIS FOR STELLAR MASS
+```
+Replace me with any conclusions you reach: look at same individual CDEs and determine from the diagnostic plot of PIT statistics whether RFCDE is performing optimally.
+
+# Bonus Material
+
+## RFCDE: Two Response Variables
+
+NOTE: this may take a long time to run! You may wish to test this code on a smaller dataset. If anything breaks, let me know!
+```{r}
+# resp.train = cbind(z.train,mass.train)
+# out.rfcde = RFCDE(pred.train,resp.train)
+# z.grid = seq(0,2,by=0.1)
+# mass.grid = seq(5,12,by=7/20)
+# cde  = predict(out.rfcde,newdata=as.matrix(pred.test),z_grid=expand.grid(z.grid,mass.grid))
+# 
+# obj = 100
+# df.plot = data.frame(expand.grid(x,y),cde[obj,])
+# names(df.plot) = c("x","y","z")
+# ggplot(data=df.plot,mapping=aes(x=x,y=y,z=z)) + geom_tile(aes(fill=z)) +
+#   stat_contour(bins=6) + xlab("Redshift") + ylab("Log_10 Mass") +
+#   guides(fill = guide_colorbar(title="f(z,M)"))
+```
+
+## Classification
+
+The dataset that we read in below contains magnitude and redshift data for 500 quasars and 500 stars. The idea is to learn a classifier that can discriminate between quasars and stars with a low misclassification rate. All code for a classification tree analysis, and a random forest analysis, is given; the idea is that you can use this code as reference material when building your first tree-based classifiers. (Note that I will not bother to transform the predictor space to include colors here, so take any numerical results with an appropriately sized grain of salt.)
+```{r}
+df = read.csv("https://raw.githubusercontent.com/pefreeman/PSU_2019/master/StarQuasar.csv")
+
+dim(df)
+names(df)
+
+set.seed(202)
+s = sample(nrow(df),0.7*nrow(df))
+pred.train = df[s,1:5]                                  # don't include redshift or redshift error!
+pred.test  = df[-s,1:5]
+class.train = factor(df[s,8])                           # necessary for classification: make the response a factor variable
+class.test  = factor(df[-s,8])
+
+# Classification Tree
+out.rpart = rpart(class.train~.,data=pred.train)
+class.pred = predict(out.rpart,newdata=pred.test,type="class")
+(t.rpart = table(class.pred,class.test))
+(mcr.rpart = (t.rpart[1,2]+t.rpart[2,1])/sum(t.rpart))   # the misclassification rate is 13%
+rpart.plot(out.rpart)
+
+# Random Forest
+out.rf = randomForest(class.train~.,data=pred.train)
+class.pred = predict(out.rf,newdata=pred.test)
+(t.rf = table(class.pred,class.test))
+(mcr.rf = (t.rf[1,2]+t.rf[2,1])/sum(t.rf))              # the misclassification rate is 8.3%
+importance(out.rf)
+varImpPlot(out.rf)
+```
